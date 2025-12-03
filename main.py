@@ -62,6 +62,7 @@ drive = build("drive", "v3", credentials=creds)
 
 # Weekly agenda
 WEEKLY_AGENDA_ID = "1jcazpKFV5wNjzDY-3oC9BKei_3iVQhrQ6xy3P76G-5w"
+MEMORIZATION_LIST_ID = "1lYz54_jarIxfqZu0vVebfcRIBykGsikdSs3QNhlecU0"
 DEST_MUSIC_FOLDER = "1rGkyWusZDKKIk9gQAOMNpind1Oh95Zjb"
 SRC_MUSIC_FOLDER = "12y2cjGE7GE3MTJ8QtNs3_Z5L30o5Ql6D"
 SEASONAL_SONGS = "1M7sLr9wwvHJIfKGijRTSjC5ae1CODzbY"
@@ -154,9 +155,7 @@ def query_tree(root_ids):
     folders.sort(key=lambda folder: folder['name'])
     i = 0
     for folder in folders:
-        print("    Assembling song [green]" + folder['name'])
-        pdfs = list_pdfs_in_folder(folder["id"])
-        folder['files'] = pdfs
+        add_files_to_folder(folder)
         i += 1
         if i >= MAX_SONGS:
             break
@@ -218,15 +217,11 @@ def get_folder_name(folder_id):
         fields="id, name"
     ).execute()['name']
 
-def assemble_song_from_folder(folder_id):
-    if not folder_contains_pdfs(folder_id):
-        return None
-    song = {}
-    song['name'] = get_folder_name(folder_id)
-    song['files'] = list_pdfs_in_folder(folder_id)
-
-    assemble_song_parts(song)
-    return song
+# Fetches the PDF file IDs and splits them into parts
+def add_files_to_folder(folder):
+    print("    Assembling song [green]" + folder['name'])
+    folder['files'] = list_pdfs_in_folder(folder['id'])
+    return folder
 
 def extract_folder_id(url):
     match = re.search(r"/folders/([a-zA-Z0-9_-]+)", url)
@@ -251,20 +246,22 @@ def scrape_song_list(doc_id):
                 links.append(text["textStyle"]["link"]["url"])
 
     links = [link for link in links if bool(re.match(r"^https://drive\.google\.com/drive/.*folders/.*", link))]
-    links = links[:2]
 
     songs = []
     # Get files at Drive links
     for link in links:
-        folder_id = extract_folder_id(song["link"])
-        song = assemble_song_from_folder(folder_id)
-        songs.append(song)
-
-    if len(no_instrument_files) > 0:
-        no_instrument_files.sort()
-        print('[yellow] Some files had no instruments:')
-        for file in no_instrument_files:
-            print(    '[yellow]' + file)
+        folder_id = extract_folder_id(link)
+        if not folder_contains_pdfs(folder_id):
+            continue
+        folder_name = get_folder_name(folder_id)
+        print('    Found folder in doc: [green]' + folder_name)
+        folder = {'id': folder_id, 'name': folder_name}
+        add_files_to_folder(folder)
+        
+        if 'files' in folder and len(folder['files']) > 0:
+            songs.append(folder)
+    
+    songs.sort(key=lambda folder: folder['name'])
     return songs
 
 def list_subfolders(parent_folder_id):
@@ -365,26 +362,30 @@ def get_file_metadata(file_id):
         fields="id, name, mimeType, size, createdTime, modifiedTime, md5Checksum, parents"
     ).execute()
 
-def copy_single_song(song):
-    pass
-
+# Make copies of files to my Drive
 def copy_songlist_into_drive(songs):
-    # Make copies of files to my Drive
     for song in songs:
         if song is None:
             print('[red]ERROR - no song!')
+
         print("Copying files for [green]" + song['name'])
         for part_key in song['parts']:
-            part_charts = song['parts'][part_key]
+            files = song['parts'][part_key]
             print("    Instrument [magenta]" + part_key)
             # Some parts have more than one chart (trumpet 1/2)
-            for part_chart in part_charts:
-                part_folder = get_or_create_folder(part_key, DEST_MUSIC_FOLDER)
-                copied = sync_file(
-                    source_file_id=part_chart['id'],
-                    dest_folder_id=part_folder['id'],
-                    new_name=part_chart['name']
-                )
+            for file in files:        
+                # If my cached copy locally is newer than the version in the LTBB drive, skip.
+                file_name_sanitized = file['name'].replace(' ', '_').replace('\\', '_').replace('/','_')
+                file_cache_path = "cache/pdf/" + file_name_sanitized
+                if needs_download("cache/pdf", file_name_sanitized, file["modifiedTime"]):
+                    part_folder = get_or_create_folder(part_key, DEST_MUSIC_FOLDER)
+                    copied = sync_file(
+                        source_file_id=file['id'],
+                        dest_folder_id=part_folder['id'],
+                        new_name=file['name']
+                    )
+                else:
+                    print(f"        Skipped [green]'{file['name']}'[/green] because the cached copy is newer")
 
             # print("New file ID:", copied)
 
@@ -479,7 +480,7 @@ def needs_download(local_dir, filename, gd_modified_ms):
     # If Google Drive version is newer, download
     return gd_ts > local_ts
 
-def update_database(songs):
+def update_database(songs, setlists):
     # Create database files
     clear_ouptput_folder()
     used_instruments = set()
@@ -494,6 +495,8 @@ def update_database(songs):
     for part in used_instruments:
         part_song_ids[part] = 0
 
+    # TODO - get songs that belong in setlists and insert them into the Setlistsong table
+    # Also insert entries into setlists table per setlist
     for song in songs:
         print("Downloading files (to count pages) for [green]" + song['name'])
         os.makedirs("cache", exist_ok=True)
@@ -504,10 +507,10 @@ def update_database(songs):
                 file_name_sanitized = file['name'].replace(' ', '_').replace('\\', '_').replace('/','_')
                 file_cache_path = "cache/pdf/" + file_name_sanitized
                 if needs_download("cache/pdf", file_name_sanitized, file["modifiedTime"]):
-                    print('    Downloading PDF for [green]' + file['name'])
+                    # print('    Downloading PDF for [green]' + file['name'])
                     download_pdf_for_pagecount(file, "cache/pdf/" + file_name_sanitized) # TODO - don't download if we have a copy
-                else:
-                    print('    Using cached PDF for [green]' + file_name_sanitized)                
+                # else:
+                    # print('    Using cached PDF for [green]' + file_name_sanitized)                
                 file['pagecount'] = get_page_count(file_cache_path)
                 file['pageorder'] = '1-' + str(file['pagecount'])
 
@@ -586,8 +589,7 @@ def update_database(songs):
 # exit()
 
 # Assemble song list
-
-songs = {}
+songs = []
 cache = load_dict('cache/cache.json')
 if args.cached and cache:
     print('[cyan]Loading songs from cached file!')
@@ -598,15 +600,32 @@ else:
     print(songs[0])
     print("[cyan]Done querying!")
     print()
-    save_dict('cache/cache.json', songs)
     time.sleep(1)
 
+# Read the rehearsal schedule
+setlists = {}
+setlist_docs = {"Rehearsal": WEEKLY_AGENDA_ID, "Memorization List": MEMORIZATION_LIST_ID}
+
+for setlist_name in setlist_docs:
+    setlist_doc_id = setlist_docs[setlist_name]
+    setlist_songs = scrape_song_list(setlist_doc_id)
+    setlist_song_titles = [song['name'] for song in setlist_songs]
+    # If there are conflicts, use the one in the doc
+    songs = [song for song in songs if song['name'] not in setlist_song_titles]
+    songs = setlist_songs + songs
+    setlists[setlist_name] = setlist_songs
+
+# Save before adding parts, we'll let that happen every time in case we want to change the schema
+save_dict('cache/cache.json', songs)
+
+print()
 print("[cyan]Assembling part information...")
 for song in songs:
     print("    Assembling part information for [green]" + song['name'])
     # Get part information:
     assemble_song_parts(song)
 print("[cyan]Part information assembled!")
+
 if len(no_instrument_files) > 0:
     print('[yellow] Some files had no instruments:')
     for file in no_instrument_files:
@@ -632,7 +651,7 @@ else:
 
 print()
 print("[cyan]Updating databases...")
-update_database(songs)
+update_database(songs, setlists)
 print("[cyan]Database updated!")
 time.sleep(1)
 
