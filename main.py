@@ -229,8 +229,6 @@ def extract_folder_id(url):
 
 # Scrapes a doc and extracts all songs linked
 def scrape_song_list(doc_id):
-    print()
-    print('[cyan]Assembling song metadata from Doc')
     doc = docs.documents().get(documentId=doc_id).execute()
     content = doc["body"]["content"]
 
@@ -491,6 +489,21 @@ def update_database(songs, setlists):
     for instrument in used_instruments:
         create_database(instrument)
 
+        # Initialize setlists
+        db_path = 'output/' + instrument.replace(' ','_').lower() + '.db'
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+
+        now_ms = int(time.time() * 1000)
+        for setlist in setlists:
+            cur.execute("""
+            INSERT INTO Setlists (Name, LastPage, LastIndex, SortBy, Ascending, DateCreated, LastModified)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (setlist['name'], 0, 0, 0, 1, now_ms, now_ms))
+        
+        conn.commit()
+        conn.close()
+
     part_song_ids = {}
     for part in used_instruments:
         part_song_ids[part] = 0
@@ -522,12 +535,14 @@ def update_database(songs, setlists):
             for file in song['parts'][part]:
                 part_song_ids[part] += 1
                 song_id = part_song_ids[part]
-                print("    Inserting Song [green]" + file['name'])
+                # print("    Inserting Song [green]" + file['name'])
                 
                 cur.execute("""
                 INSERT INTO Songs (Title, Difficulty, LastPage, OrientationLock, Duration, Stars, VerticalZoom, Sharpen, SharpenLevel, CreationDate, LastModified, Keywords, AutoStartAudio, SongId)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (file['name'][:-4], 0, 0, 0, 0, 0, 1.0, 0, 7, file['createdTime'], file['modifiedTime'], "", 0, part_song_ids[part]))
+                (file['name'][:-4], 0, 0, 0, 0, 0, 1.0, 0, 7, file['createdTime'], file['modifiedTime'], "", 0, 0))
+
+                # print(part_folder_ids)
 
                 cur.execute("""
                 INSERT INTO Files (SongId, Path, PageOrder, FileSize, LastModified, Source, Type, SourceFilePageCount, FileHash, Width, Height)
@@ -561,6 +576,24 @@ def update_database(songs, setlists):
                     INSERT INTO MetronomeBeatsPerPage (SongId, Page, BeatsPerPage)
                     VALUES (?, ?, ?)""",
                     (song_id, i, 0))
+
+                # Assume ID is correct here
+                for i in range(len(setlists)):
+                    setlist = setlists[i]
+                    setlist_id = i+1 # 1-indexed
+                    found = False
+                    for setlist_song in setlist['songs']:
+                        if found:
+                            break
+                        for setlist_file in setlist_song['files']:
+                            if setlist_file['name'] == file['name']:
+                                print("Found match for " + setlist_file['name'] + ' and ' + file['name'])
+                                cur.execute("""
+                                INSERT INTO SetlistSong (SetlistId, SongId)
+                                VALUES (?, ?)""",
+                                (setlist_id, song_id))
+                                found = True
+                                break
 
                 # cur.execute("""
                 # INSERT INTO ZoomPerPage ()
@@ -603,17 +636,27 @@ else:
     time.sleep(1)
 
 # Read the rehearsal schedule
-setlists = {}
-setlist_docs = {"Rehearsal": WEEKLY_AGENDA_ID, "Memorization List": MEMORIZATION_LIST_ID}
+setlists = []
+setlist_docs = {"Memorization List": MEMORIZATION_LIST_ID, "Rehearsal": WEEKLY_AGENDA_ID}
 
 for setlist_name in setlist_docs:
+    print()
+    print('[cyan]Assembling song metadata from Doc ' + setlist_name)
     setlist_doc_id = setlist_docs[setlist_name]
     setlist_songs = scrape_song_list(setlist_doc_id)
     setlist_song_titles = [song['name'] for song in setlist_songs]
-    # If there are conflicts, use the one in the doc
+    # Update songs. If there are conflicts, use the one in the doc - TODO this is not good enough, sometimes the same song appears twice in one doc
     songs = [song for song in songs if song['name'] not in setlist_song_titles]
     songs = setlist_songs + songs
-    setlists[setlist_name] = setlist_songs
+
+    # Assemble setlist by name
+    setlist = {}
+    setlist['name'] = setlist_name
+    setlist['songs'] = setlist_songs
+    setlists.append(setlist)
+
+print(setlists)
+input("Press Enter")
 
 # Save before adding parts, we'll let that happen every time in case we want to change the schema
 save_dict('cache/cache.json', songs)
@@ -635,19 +678,19 @@ print("[cyan]See part information at [green]cache/songs_with_parts.json")
 save_dict('cache/songs_with_parts.json', songs)
 time.sleep(1)
 
+# Populate folder IDs
+print()
+print("[cyan]Getting part folder IDs...")
+for part in instruments:
+    print("    Finding [magenta]" + part)
+    get_or_create_folder(part, DEST_MUSIC_FOLDER)
 if not args.nocopy:
     print()
     print('[cyan]Copying songs into Google Drive folders...')
     copy_songlist_into_drive(songs)
     print('[cyan]Songs copied into Drive!')
     time.sleep(1)
-else:
-    # Populate folder IDs
-    print()
-    print("[cyan]Getting part folder IDs...")
-    for part in instruments:
-        print("    Finding [magenta]" + part)
-        get_or_create_folder(part, DEST_MUSIC_FOLDER)
+    
 
 print()
 print("[cyan]Updating databases...")
