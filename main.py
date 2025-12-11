@@ -30,7 +30,7 @@ from threading import Lock
 # Relevant Google Drive folders
 WEEKLY_AGENDA_ID = "1jcazpKFV5wNjzDY-3oC9BKei_3iVQhrQ6xy3P76G-5w"
 MEMORIZATION_LIST_ID = "1lYz54_jarIxfqZu0vVebfcRIBykGsikdSs3QNhlecU0" # TODO - this just links to mp3s, not song folders, maybe remove
-DEST_MUSIC_FOLDER = "1rGkyWusZDKKIk9gQAOMNpind1Oh95Zjb" # The folder where the MobileSheets database and PDFs will end up
+DEST_MUSIC_FOLDER = "1h-T2mnFrr0VpafBDJ3nv3vvO_xLGir9t" # The folder where the MobileSheets database and PDFs will end up
 SRC_MUSIC_FOLDER = "12y2cjGE7GE3MTJ8QtNs3_Z5L30o5Ql6D" # The LTBB folder containing all the sheet music. Currently organized in folders like 'A-C', 'D-F', etc
 SEASONAL_SONGS = "1M7sLr9wwvHJIfKGijRTSjC5ae1CODzbY" # Some subfolders that contain additional songs not in the alphabetic folders
 
@@ -44,13 +44,12 @@ SCOPES = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/a
 console = Console()
 builtins.print = lambda *args, **kwargs: console.print(*args, highlight=False, **kwargs)
 arg_parser = argparse.ArgumentParser()
-arg_parser.add_argument('--nocache', action="store_true", help="Force a clean redownload of songs.") 
+arg_parser.add_argument('--clean', action="store_true", help="Force a clean redownload of songs, clear local cache. This does NOT clean the Google Drive folder, do that manually if needed (it shouldn't be needed).") 
 arg_parser.add_argument('--skipquery', action="store_true", help="Used for inner dev loop. Stores the file metadata of the drive so we don't have to requery each song. But usually you want to requery.")
 arg_parser.add_argument('--verbose', action="store_true", help="Spit out extra info") 
 args = arg_parser.parse_args()
 
 drive_lock = Lock()
-print_lock = Lock()
 
 def get_creds():
     creds = None
@@ -168,7 +167,7 @@ def query_tree(root_ids):
 
 def list_files(folder_id):
     query = f"'{folder_id}' in parents"
-    result = drive.files().list(q=query, fields="files(id, name)").execute()
+    result = drive.files().list(q=query, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     return result.get("files", [])
 
 def folder_contains_pdfs(folder_id):
@@ -176,6 +175,8 @@ def folder_contains_pdfs(folder_id):
     results = drive.files().list(
         q=query,
         fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
         pageSize=1  # we only need to know if at least one exists
     ).execute()
     
@@ -216,7 +217,9 @@ def extract_instruments(file_name):
 def get_folder_name(folder_id):
     return drive.files().get(
         fileId=folder_id,
-        fields="id, name"
+        fields="id, name",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
     ).execute()['name']
 
 # Fetches the PDF file IDs and splits them into parts
@@ -282,14 +285,16 @@ def list_subfolders(parent_folder_id):
 def create_folder(name, parent_id=None):
     file_metadata = {
         "name": name,
-        "mimeType": "application/vnd.google-apps.folder"
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [parent_id]
     }
     if parent_id:
         file_metadata["parents"] = [parent_id]
 
     folder = drive.files().create(
         body=file_metadata,
-        fields="id, name, parents"
+        fields="id, name, parents",
+        supportsAllDrives=True
     ).execute()
     print("Created folder ", name, ":", folder['id'])
 
@@ -304,7 +309,8 @@ def get_or_create_folder(name, parent_id=None):
     results = drive.files().list(
         q=query,
         fields="files(id, name)",
-        spaces="drive"
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
     ).execute()
 
     files = results.get("files", [])
@@ -334,7 +340,7 @@ def sync_file(source_file_id, dest_folder_id, new_name=None):
 
     # Check if a file with the same name exists in destination
     query = f"name contains '{escape_drive_query(source_name)}' and '{dest_folder_id}' in parents and trashed = false"
-    results = drive.files().list(q=query, fields="files(id, name, modifiedTime)").execute()
+    results = drive.files().list(q=query, fields="files(id, name, modifiedTime)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     existing_files = results.get("files", [])
 
     if existing_files:
@@ -345,21 +351,22 @@ def sync_file(source_file_id, dest_folder_id, new_name=None):
         if source_modified > existing_modified:
             print(f"    Source file is newer. Replacing '{source_name}'")
             # Delete the old copy
-            drive.files().delete(fileId=existing["id"]).execute()
+            drive.files().delete(fileId=existing["id"], supportsAllDrives=True).execute()
         else:
             print(f"    Existing file '{source_name}' is up-to-date. Skipping copy.")
             return existing["id"]  # nothing to do
 
     # Copy the source file into the folder
     new_file_metadata = {"parents": [dest_folder_id], "name": source_name}
-    copied_file = drive.files().copy(fileId=source_file_id, body=new_file_metadata, fields="id, name").execute()
+    copied_file = drive.files().copy(fileId=source_file_id, body=new_file_metadata, fields="id, name", supportsAllDrives=True).execute()
     print(f"    Copied [green]'{source_name}'[/green] to folder")
     return copied_file["id"]
 
 def get_file_metadata(file_id):
     return drive.files().get(
         fileId=file_id,
-        fields="id, name, mimeType, size, createdTime, modifiedTime, md5Checksum, parents"
+        fields="id, name, mimeType, size, createdTime, modifiedTime, md5Checksum, parents",
+        supportsAllDrives=True
     ).execute()
 
 # Make copies of files to my Drive
@@ -400,14 +407,16 @@ def upload_to_drive(local_path, dest_name, parent_folder_id):
 
     results = drive.files().list(
         q=query,
-        fields="files(id, name)"
+        fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
     ).execute()
 
     # Delete existing file(s) with that name
     for f in results.get("files", []):
         if args.verbose:
             print(f"    Deleting old {f['name']} ({f['id']})")
-        drive.files().delete(fileId=f["id"]).execute()
+        drive.files().delete(fileId=f["id"], supportsAllDrives=True).execute()
 
     # Upload the new file
     file_metadata = {
@@ -420,7 +429,8 @@ def upload_to_drive(local_path, dest_name, parent_folder_id):
     uploaded = drive.files().create(
         body=file_metadata,
         media_body=media,
-        fields="id, name"
+        fields="id, name",
+        supportsAllDrives=True
     ).execute()
 
     if args.verbose:
@@ -461,7 +471,7 @@ def download_pdf_for_pagecount(file, dest_path):
     # Download the file to get the page count
     request = None
     with drive_lock:
-        request = drive.files().get_media(fileId=file['id'])
+        request = drive.files().get_media(fileId=file['id'], supportsAllDrives=True)
     with io.FileIO(dest_path, 'wb') as fh:
         downloader = MediaIoBaseDownload(fh, request)
         done = False
@@ -630,7 +640,7 @@ def update_database(songs, setlists):
 ### Main script execution starts here ###
 
 # Clean cache
-if args.nocache:
+if args.clean:
     if os.path.exists('cache'):
         shutil.rmtree('cache')
 
