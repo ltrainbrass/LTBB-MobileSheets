@@ -18,6 +18,12 @@ _The first time you run the script, it will take longer. This is because we have
     1. The first time you run the script, it will prompt you for permission and generate a token.json.
     2. If you haven't run the script in a while, you may need to delete token.json and regenerate it.
 
+## Syncing with MobileSheets
+1. Make sure the [LTBB MobileSheets](https://drive.google.com/drive/u/0/folders/1rGkyWusZDKKIk9gQAOMNpind1Oh95Zjb) folder is added to your Google Drive
+2.. Use a separate Library! MobileSheets lets you create multiple libraries under Menu -> Switch Libraries. This will keep any other music you have in MobileSheets from being clobbered by this tool.
+3. In MobileSheets, go to Menu -> Sync Library and select the folder containing your instrument. The first time you sync it will take a long time, but subsequent syncs will be fast!
+4. Sync once a week to get the new Rehearsal Setlist and any updated songs!
+
 ## TODO
 - Transfer ownership of my 
 - Commit a blank mobilesheets.db, since we don't build one from scratch.
