@@ -27,10 +27,10 @@ _The first time you run the script, it will take longer. This is because we have
 4. Sync once a week to get the new Rehearsal Setlist and any updated songs!
 
 ## TODO
-- Transfer ownership of my 
-- Commit a blank mobilesheets.db, since we don't build one from scratch.
+- Maybe transfer ownership of my (Geoffrey's) Google Drive folder to an LTBB account
 - Some instruments should receive other instruments' parts if they don't have one. (e.g. Bass Sax should get the Tuba part). Need to speak to humans to figure this out.
   - Also, e.g. Saints has instrumentation like "Bb instruments"/"Eb instruments" which the script currently doesn't handle, but could be made to.
 - Change song names automatically, so that songs of the form "Tenor Sax - Blah" are renamed to "Blah - Tenor Sax" so they are alphabetical by title.
 - On auth failure, delete token.json and re-run
 - Since we are doing all this anyways, it would not be hard to just add all the rehearsal PDFs to a Google Drive subfolder, since not everyone uses MobileSheets 
+- Add some kind of lock file maybe, in case two people run the script at the same time

@@ -1,3 +1,5 @@
+from __future__ import print_function
+
 import os.path
 import re
 import os
@@ -10,7 +12,6 @@ import time
 import json
 import argparse
 import pathlib
-from __future__ import print_function
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -26,13 +27,26 @@ from PyPDF2 import PdfReader
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 
+# Relevant Google Drive folders
+WEEKLY_AGENDA_ID = "1jcazpKFV5wNjzDY-3oC9BKei_3iVQhrQ6xy3P76G-5w"
+MEMORIZATION_LIST_ID = "1lYz54_jarIxfqZu0vVebfcRIBykGsikdSs3QNhlecU0" # TODO - this just links to mp3s, not song folders, maybe remove
+DEST_MUSIC_FOLDER = "1rGkyWusZDKKIk9gQAOMNpind1Oh95Zjb" # The folder where the MobileSheets database and PDFs will end up
+SRC_MUSIC_FOLDER = "12y2cjGE7GE3MTJ8QtNs3_Z5L30o5Ql6D" # The LTBB folder containing all the sheet music. Currently organized in folders like 'A-C', 'D-F', etc
+SEASONAL_SONGS = "1M7sLr9wwvHJIfKGijRTSjC5ae1CODzbY" # Some subfolders that contain additional songs not in the alphabetic folders
+
+# Warning - if the 5. Resources folder name ever changes, we are at risk of some terrible infinite recursion because this script uploads files there
+IGNORE_FOLDERS = ['1. Member Drafts', '2. Seasonal Songs', '3. Warm-ups', '4. 3rd Rail Drumline', '5. Resources', '6. Recordings']
+MAX_SONGS = 99999
+
+# Set up Google Drive 
 SCOPES = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/documents.readonly"]
 
 console = Console()
 builtins.print = lambda *args, **kwargs: console.print(*args, highlight=False, **kwargs)
 arg_parser = argparse.ArgumentParser()
-arg_parser.add_argument('--cached', action="store_true")
-arg_parser.add_argument('--nocopy', action="store_true")
+arg_parser.add_argument('--nocache', action="store_true", help="Force a clean redownload of songs.") 
+arg_parser.add_argument('--skipquery', action="store_true", help="Used for inner dev loop. Stores the file metadata of the drive so we don't have to requery each song. But usually you want to requery.")
+arg_parser.add_argument('--verbose', action="store_true", help="Spit out extra info") 
 args = arg_parser.parse_args()
 
 drive_lock = Lock()
@@ -56,13 +70,6 @@ def get_creds():
 creds = get_creds()
 docs = build("docs", "v1", credentials=creds)
 drive = build("drive", "v3", credentials=creds)
-
-# Weekly agenda
-WEEKLY_AGENDA_ID = "1jcazpKFV5wNjzDY-3oC9BKei_3iVQhrQ6xy3P76G-5w"
-MEMORIZATION_LIST_ID = "1lYz54_jarIxfqZu0vVebfcRIBykGsikdSs3QNhlecU0"
-DEST_MUSIC_FOLDER = "1rGkyWusZDKKIk9gQAOMNpind1Oh95Zjb"
-SRC_MUSIC_FOLDER = "12y2cjGE7GE3MTJ8QtNs3_Z5L30o5Ql6D"
-SEASONAL_SONGS = "1M7sLr9wwvHJIfKGijRTSjC5ae1CODzbY"
 
 # TODO
 # - if no instruments:
@@ -128,8 +135,6 @@ def list_pdfs_in_folder(folder_id):
         file['createdTime'] = int(dt.timestamp() * 1000)
     return results["files"]
 
-IGNORE_FOLDERS = ['1. Member Drafts', '2. Seasonal Songs', '3. Warm-ups', '4. 3rd Rail Drumline', '5. Resources', '6. Recordings']
-MAX_SONGS = 99999
 def query_tree(root_ids):
     # Get top level folders
     top_level_folders = []
@@ -338,17 +343,17 @@ def sync_file(source_file_id, dest_folder_id, new_name=None):
 
         # Compare modified timestamps
         if source_modified > existing_modified:
-            print(f"        Source file is newer. Replacing '{source_name}'")
+            print(f"    Source file is newer. Replacing '{source_name}'")
             # Delete the old copy
             drive.files().delete(fileId=existing["id"]).execute()
         else:
-            print(f"        Existing file '{source_name}' is up-to-date. Skipping copy.")
+            print(f"    Existing file '{source_name}' is up-to-date. Skipping copy.")
             return existing["id"]  # nothing to do
 
     # Copy the source file into the folder
     new_file_metadata = {"parents": [dest_folder_id], "name": source_name}
     copied_file = drive.files().copy(fileId=source_file_id, body=new_file_metadata, fields="id, name").execute()
-    print(f"        Copied [green]'{source_name}'[/green] to folder")
+    print(f"    Copied [green]'{source_name}'[/green] to folder")
     return copied_file["id"]
 
 def get_file_metadata(file_id):
@@ -366,7 +371,6 @@ def copy_songlist_into_drive(songs):
         print("Copying files for [green]" + song['name'])
         for part_key in song['parts']:
             files = song['parts'][part_key]
-            print("    Instrument [magenta]" + part_key)
             # Some parts have more than one chart (trumpet 1/2)
             for file in files:        
                 # If my cached copy locally is newer than the version in the LTBB drive, skip.
@@ -379,8 +383,10 @@ def copy_songlist_into_drive(songs):
                         dest_folder_id=part_folder['id'],
                         new_name=file['name']
                     )
+                    print(f"    Caching [green]'{file['name']}'[/green] locally, this will be faster next time.")
                 else:
-                    print(f"        Skipped [green]'{file['name']}'[/green] because the cached copy is newer")
+                    if args.verbose:
+                        print(f"    Skipped [green]'{file['name']}'[/green] because the cached copy is newer.")
 
             # print("New file ID:", copied)
 
@@ -399,7 +405,8 @@ def upload_to_drive(local_path, dest_name, parent_folder_id):
 
     # Delete existing file(s) with that name
     for f in results.get("files", []):
-        print(f"Deleting old {f['name']} ({f['id']})")
+        if args.verbose:
+            print(f"    Deleting old {f['name']} ({f['id']})")
         drive.files().delete(fileId=f["id"]).execute()
 
     # Upload the new file
@@ -416,7 +423,8 @@ def upload_to_drive(local_path, dest_name, parent_folder_id):
         fields="id, name"
     ).execute()
 
-    print(f"Uploaded {uploaded['name']} ({uploaded['id']})")
+    if args.verbose:
+        print(f"    Uploaded {uploaded['name']} ({uploaded['id']})")
     return uploaded["id"]
 
 def clear_ouptput_folder():
@@ -425,14 +433,16 @@ def clear_ouptput_folder():
         path = os.path.join(folder, name)
         if os.path.isfile(path):
             os.remove(path)
-            print(f"    [cyan]Deleted {path}")
+            if args.verbose:
+                print(f"    Deleted {path}")
 
 def create_database(db_name):
     db_path = 'output/' + db_name.replace(' ','_').lower() + '.db'
     if os.path.exists(db_path):
         print('    Removing old ' + db_path + ' and replacing with a blank fresh library db')
         os.remove(db_path)
-    print('    Created ' + db_path)
+    if args.verbose:
+        print('    Created ' + db_path)
     shutil.copy("ltbb_blank.db", db_path)
 
 def java_string_hashcode(s: str) -> int:
@@ -507,8 +517,9 @@ def update_database(songs, setlists):
 
     # TODO - get songs that belong in setlists and insert them into the Setlistsong table
     # Also insert entries into setlists table per setlist
+    print("[cyan]Downloading songs to count pages...")
     for song in songs:
-        print("Downloading files (to count pages) for [green]" + song['name'])
+        # print("Downloading files (to count pages) for [green]" + song['name'])
         os.makedirs("cache", exist_ok=True)
         os.makedirs("cache/pdf", exist_ok=True)
         with ThreadPoolExecutor(max_workers=3) as ex:
@@ -606,6 +617,7 @@ def update_database(songs, setlists):
             conn.commit()
             conn.close()
 
+    print("[cyan]Done downloading!")
     for instrument in used_instruments:
         db_name = instrument.replace(' ','_').lower() + '.db'
         hashcodes_name = instrument.replace(' ','_').lower() + '_hashcodes.txt'
@@ -614,46 +626,53 @@ def update_database(songs, setlists):
         upload_to_drive(local_path='output/'+db_name, dest_name='mobilesheets.db', parent_folder_id = part_folder)
         upload_to_drive(local_path='output/'+hashcodes_name, dest_name='mobilesheets_hashcodes.txt', parent_folder_id = part_folder)
 
-# print(java_string_hashcode('1tdkwYTPnSlXTZeZwPyLTAhCb73l0ngse//Wipe_Eauxt_1_2 - Tenor Sax.pdf'))
-# exit()
+
+### Main script execution starts here ###
+
+# Clean cache
+if args.nocache:
+    if os.path.exists('cache'):
+        shutil.rmtree('cache')
 
 # Assemble song list
 songs = []
 cache = load_dict('cache/cache.json')
-if args.cached and cache:
+if args.skipquery and cache and 'songs' in cache and 'setlists' in cache:
+    # For inner dev loop, we can skip the query of the google drive folders and docs
     print('[cyan]Loading songs from cached file!')
-    songs = cache
+    songs = cache['songs']
+    setlists = cache['setlists']
 else:
     print("[cyan]Querying LTBB Drive...")
     songs = query_tree([SRC_MUSIC_FOLDER, SEASONAL_SONGS])
     print("[cyan]Done querying!")
-    print()
     time.sleep(1)
 
-# Read the rehearsal schedule
-setlists = []
-setlist_docs = {"Memorization List": MEMORIZATION_LIST_ID, "Rehearsal": WEEKLY_AGENDA_ID}
+    # Read the rehearsal schedule
+    # TODO - memorization list actually does not link to any sheet music
+    setlists = []
+    setlist_docs = {"Memorization List": MEMORIZATION_LIST_ID, "Rehearsal": WEEKLY_AGENDA_ID}
 
-for setlist_name in setlist_docs:
-    print()
-    print('[cyan]Assembling song metadata from Doc ' + setlist_name)
-    setlist_doc_id = setlist_docs[setlist_name]
-    setlist_songs = scrape_song_list(setlist_doc_id)
-    setlist_song_titles = [song['name'] for song in setlist_songs]
-    # Update songs. If there are conflicts, use the one in the doc - TODO this is not good enough, sometimes the same song appears twice in one doc
-    songs = [song for song in songs if song['name'] not in setlist_song_titles]
-    songs = setlist_songs + songs
+    for setlist_name in setlist_docs:
+        print()
+        print('[cyan]Assembling song metadata from Doc ' + setlist_name)
+        setlist_doc_id = setlist_docs[setlist_name]
+        setlist_songs = scrape_song_list(setlist_doc_id)
+        setlist_song_titles = [song['name'] for song in setlist_songs]
+        # Update songs. If there are conflicts, use the one in the doc - TODO this is not good enough, sometimes the same song appears twice in one doc
+        songs = [song for song in songs if song['name'] not in setlist_song_titles]
+        songs = setlist_songs + songs
 
-    # Assemble setlist by name
-    setlist = {}
-    setlist['name'] = setlist_name
-    setlist['songs'] = setlist_songs
-    setlists.append(setlist)
+        # Assemble setlist by name
+        setlist = {}
+        setlist['name'] = setlist_name
+        setlist['songs'] = setlist_songs
+        setlists.append(setlist)
 
 # Save before adding parts, we'll let that happen every time in case we want to change the schema
 os.makedirs('cache', exist_ok=True)
 os.makedirs('output', exist_ok=True)
-save_dict('cache/cache.json', songs)
+save_dict('cache/cache.json', {'songs':songs, 'setlists':setlists})
 
 print()
 print("[cyan]Assembling part information...")
@@ -664,9 +683,9 @@ for song in songs:
 print("[cyan]Part information assembled!")
 
 if len(no_instrument_files) > 0:
-    print('[yellow] Some files had no instruments:')
+    print('[yellow]Some files had no instruments:')
     for file in no_instrument_files:
-        print(    '[yellow]' + file)
+        print(    '[yellow]    ' + file)
 
 print("[cyan]See part information at [green]cache/songs_with_parts.json")
 save_dict('cache/songs_with_parts.json', songs)
@@ -678,12 +697,14 @@ print("[cyan]Getting part folder IDs...")
 for part in instruments:
     print("    Finding [magenta]" + part)
     get_or_create_folder(part, DEST_MUSIC_FOLDER)
-if not args.nocopy:
-    print()
-    print('[cyan]Copying songs into Google Drive folders...')
-    copy_songlist_into_drive(songs)
-    print('[cyan]Songs copied into Drive!')
-    time.sleep(1)
+
+# Copy files from Src drive folder to Destination drive folder 
+# Skips if the Src song is not newer than the Dest song
+print()
+print('[cyan]Copying songs into Google Drive folders...')
+copy_songlist_into_drive(songs)
+print('[cyan]Songs copied into Drive!')
+time.sleep(1)
     
 
 print()
