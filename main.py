@@ -1,5 +1,16 @@
-from __future__ import print_function
 import os.path
+import re
+import os
+import shutil
+import sqlite3
+import io
+import requests
+import builtins
+import time
+import json
+import argparse
+import pathlib
+from __future__ import print_function
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -7,24 +18,13 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.http import MediaIoBaseDownload
-import re
 from pprint import pprint
-import os
-import shutil
-import sqlite3
-import io
 from pathlib import Path
-import requests
 from rich.console import Console
-import builtins
-import time
 from dateutil import parser
 from PyPDF2 import PdfReader
-import json
-import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
-import pathlib
 
 SCOPES = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/documents.readonly"]
 
@@ -37,9 +37,6 @@ args = arg_parser.parse_args()
 
 drive_lock = Lock()
 print_lock = Lock()
-def safe_print(*args, **kwargs):
-    with print_lock:
-        console.print(*args, highlight=False, **kwargs)
 
 def get_creds():
     creds = None
@@ -201,7 +198,7 @@ def extract_instruments(file_name):
     instruments = []
     file_name_sanitized = file_name.lower().replace(' ', '_').replace('.','')
     for possible_instrument in instrument_lookup:
-        if possible_instrument.replace(' ', '_') in file_name_sanitized:
+        if possible_instrument.replace(' ', '_') in file_name_sanitized and instrument_lookup[possible_instrument] not in instruments:
             instruments.append(instrument_lookup[possible_instrument])
     if not instruments:
         if 'horn' in file_name_sanitized:
@@ -654,6 +651,8 @@ for setlist_name in setlist_docs:
     setlists.append(setlist)
 
 # Save before adding parts, we'll let that happen every time in case we want to change the schema
+os.makedirs('cache', exist_ok=True)
+os.makedirs('output', exist_ok=True)
 save_dict('cache/cache.json', songs)
 
 print()
