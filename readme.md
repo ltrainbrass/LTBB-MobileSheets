@@ -25,3 +25,4 @@ _The first time you run the script, it will take longer. This is because we have
   - Also, e.g. Saints has instrumentation like "Bb instruments"/"Eb instruments" which the script currently doesn't handle, but could be made to.
 - Change song names automatically, so that songs of the form "Tenor Sax - Blah" are renamed to "Blah - Tenor Sax" so they are alphabetical by title.
 - On auth failure, delete token.json and re-run
+- Since we are doing all this anyways, it would not be hard to just add all the rehearsal PDFs to a Google Drive subfolder, since not everyone uses MobileSheets 
