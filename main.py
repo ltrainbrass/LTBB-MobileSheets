@@ -80,6 +80,11 @@ def get_creds():
     SCOPES = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/documents.readonly"]
     if os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    if not os.path.exists("credentials.json"):
+        print("You need to generate a credentials.json from Google in order for this script to work!")
+        print("This means setting up a Google Cloud project (sorry you cannot use mine for security reasons)")
+        print("Instructions: https://developers.google.com/workspace/drive/api/quickstart/python")
+        exit()
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
