@@ -49,25 +49,40 @@ IGNORE_FOLDERS = ['1. Member Drafts', '2. Seasonal Songs', '3. Warm-ups', '4. 3r
 MAX_SONGS = 99999
 
 # Instrumentation - this could also possibly move to a .ini folder
-# TODO
-# - if no instruments:
-#   - Horn means F Horn
-#   - take any Bb/Eb/F/etc when no instruments available
 INSTRUMENTS = {
     'Score': ['Score'],
-    'Tuba': ['Tuba', 'Sousaphone', 'Sousa', 'Euphonium', 'Euph', 'Low Brass', 'Basses', 'Bass (Trebel Clef)', 'Bass_Line'],
+    'Tuba': ['Tuba', 'Sousaphone', 'Sousa', 'Low Brass', 'Basses', 'Bass (Treble Clef)', 'Bass_Line'],
     'Horn': ['Horn in F', 'F Horn', 'Mellophone', 'Horns F'],
     'Percussion': ['Percussion', 'Drum', 'Snareline', 'Perc', 'BassDr', 'Snare', 'Congo', 'Toms', 'Quads', 'Cymbal', 'Glockenspiel'],
-    'Clarinet': ['Clarinet'],
+    'Clarinet': ['Clarinet', 'Bb Sopranos'],
     'Soprano Sax': ['Soprano'],
-    'Tenor Sax': ['Tenor'],
     'Alto Sax': ['Alto'],
-    'Bass Sax': ['Bass Sax', 'Bass Saxophone'],
+    'Tenor Sax': ['Tenor'],
     'Bari Sax': ['Bari'],
+    'Bass Sax': ['Bass Sax', 'Bass Saxophone'],
     'Trumpet': ['Trumpet', 'Flugelhorn', 'Trmp', 'Trumplet'],
-    'Trombone': ['Trombone', 'Tbn', 'Trmb', 'Bone'],
+    'Trombone': ['Trombone', 'Tbn', 'Trmb', 'Bone', 'Low Brass'],
     'Eb Horn' : ['Eb Horn', 'Horn in Eb'],
-    'Flute' : ['Flute', 'C Woodwind']
+    'Flute' : ['Flute', 'C Woodwind'],
+    'Euph' : ['Euphonium', 'Euph']
+}
+# Does your instrument not have a part for this song? Use a backup!
+BACKUP_INSTRUMENTS = {
+    'Score': [],
+    'Tuba': ['Bass Clef Instruments'],
+    'Horn': ['F Treble Clef Instruments', 'Horn'], # Horn included here so we don't accidentally pick up a zillion Eb Horns without at least trying things like 'Horn in F' first
+    'Percussion': [],
+    'Clarinet': ['Bb Treble Clef Instruments'],
+    'Soprano Sax': ['Bb Treble Clef Instruments', 'Tenor Sax'],
+    'Alto Sax': ['Eb Treble Clef Instruments'],
+    'Tenor Sax': ['Bb Treble Clef Instruments'],
+    'Bari Sax': ['Eb Treble Clef Instruments'],
+    'Bass Sax': ['Bb Treble Clef Instruments', 'Tuba'],
+    'Trumpet': ['Bb Treble Clef Instruments'],
+    'Trombone': ['Bass Clef Instruments'],
+    'Eb Horn' : ['Eb Treble Clef Instruments', 'Bari Sax'],
+    'Flute' : ['C Treble Clef Instruments'],
+    'Euph' : ['Eb Treble Clef Instruments', 'Tenor Sax']
 }
 INSTRUMENT_LOOKUP = {}
 for main in INSTRUMENTS:
@@ -118,18 +133,6 @@ builtins.print = my_log_print
 ######## Main Execution Starts Here!!! ########
 ###############################################
 def main():
-    # with console.status("[bold green]Working...") as status:
-    #     for i in range(5):
-    #         msg = f"Step {i+1}/5"
-    #         print(msg)           # live log
-    #         time.sleep(0.5)
-
-    # file_console.save_html("log.html")
-    # file_console.save_text("log.txt")
-    # log_path = os.path.abspath("log.html")
-    # webbrowser.open(f"file://{log_path}")
-    # exit()
-
     # Clean download cache
     if args.clean:
         if os.path.exists('cache'):
@@ -173,7 +176,7 @@ def main():
     # Warn about files missing instruments
     partless_files = find_partless_files(songs)
     if len(partless_files) > 0:
-        warn('[yellow]Some files were not associated with any instrument:', silent=True)
+        warn('[yellow]Some files were not associated with any instrument (they might be Conductor Scores):', silent=True)
         for file in partless_files:
             warn(    '[yellow]    ' + file['name'], silent=True)
     print("[cyan]See part information at [green]cache/songs_with_parts.json")
@@ -225,7 +228,7 @@ def main():
             song = songs[song_idx]
             missing_part = {'name':song['name'], 'parts':[]}
             for part_key in part_folders:
-                if part_key not in song['parts']:
+                if part_key not in song['parts'] and part_key not in ['Flute', 'Score', 'Percussion']:
                     missing_part['parts'].append(part_key)
             if missing_part['parts']:
                 missing_parts.append(missing_part)
@@ -233,7 +236,7 @@ def main():
             warn(f'[yellow]Setlist [cyan]{setlist['name']}[/cyan] is missing parts in the following songs:', silent=True)
             warn('[yellow](Geoffrey can help get this sorted out)', silent=True)
             for missing_part in missing_parts:
-                warn(f'    [green]{missing_part['name']}[/green]: ' + str(missing_part['parts']), silent=True)
+                error(f'    [green]{missing_part['name']}[/green]: ' + str(missing_part['parts']), silent=True)
 
     # Print errors
     if error_log:
@@ -248,14 +251,17 @@ def warn(message, silent=False):
         print(message)
     error_log.append(message)
 
-def error(message, silent=False):
+def error(message, silent=False, crash=False):
     message = '[red]ERROR: [/red]' + message
-    if not silent:
+    if crash or not silent:
         print(message)
     error_log.append(message)
+    if crash:
+        print(5 / 0)
+        
 
-def push_log_section(section_name, live=None):
-    print(section_name, live=live)
+def push_log_section(section_name, live=None, save_to_file=True):
+    print(section_name, live=live, save_to_file=save_to_file)
     global log_indent
     log_indent += '    '
 
@@ -432,6 +438,9 @@ def find_partless_files(songs):
                 partless_files.append(file)
     return partless_files
 
+def filename_contains(file_name, test_string):
+    return test_string.lower().replace(' ', '_') in file_name.lower().replace(' ', '_').replace('.','')
+
 # Figure out instrumentation from song titles and which files belong to which instrument
 def assemble_song_parts(song):
     files = song['files']
@@ -444,6 +453,39 @@ def assemble_song_parts(song):
                 song['parts'][part] = []
             song['parts'][part].append(file)
             print("[magenta]" + part + "[/magenta]: [green]" + file['name'])
+    
+    # If a part doesn't have a file, try a backup
+    for part_key in INSTRUMENTS:
+        if part_key not in song['parts']:
+            found = False
+            for backup_part in BACKUP_INSTRUMENTS[part_key]:
+                # Directly take the part if it's in there
+                if backup_part in song['parts']:
+                    song['parts'][part_key] = song['parts'][backup_part]
+                    print("[magenta]" + part_key + "[/magenta] using backup part [green]" + str([file['name'] for file in song['parts'][backup_part]]))
+                    break
+                else:
+                    # The backup part might be something werid like "Bb Treble Clef Instruments", so do another filename test
+                    for file in files:
+                        if filename_contains(file['name'], backup_part):
+                            song['parts'][part_key] = [file]
+                            print("[magenta]" + part_key + "[/magenta] using backup part [green]" + file['name'])
+                            found = True
+                            break
+                    if found:
+                        break
+            if part_key not in song['parts'] and part_key not in ['Flute', 'Percussion', 'Score']:
+                warn("No part file found for instrument [magenta]" + part_key + "[/magenta] for song [green]" + song['name'])
+
+    for file in song['files']:
+        found = False
+        for part_key in song['parts']:
+            if file in song['parts'][part_key]:
+                found = True
+                break
+        if not found:
+            print("[yellow]Instrument not found for file: " + file['name'])
+
 
 # Function for getting a sanitized instrument/part name out of "MySong123 - __Tenor__123_v4"
 def extract_parts_from_filename(file_name):
@@ -452,13 +494,8 @@ def extract_parts_from_filename(file_name):
     instruments = []
     file_name_sanitized = file_name.lower().replace(' ', '_').replace('.','')
     for possible_instrument in INSTRUMENT_LOOKUP:
-        if possible_instrument.replace(' ', '_') in file_name_sanitized and INSTRUMENT_LOOKUP[possible_instrument] not in instruments:
+        if filename_contains(file_name, possible_instrument) and INSTRUMENT_LOOKUP[possible_instrument] not in instruments:
             instruments.append(INSTRUMENT_LOOKUP[possible_instrument])
-    if not instruments:
-        if 'horn' in file_name_sanitized:
-            instruments.append(INSTRUMENT_LOOKUP['horn in f'])
-    if not instruments:
-        print("[yellow]INSTRUMENT NOT FOUND: " + file_name)
     return instruments
 
 # Gets a Google Drive folder name from its ID
@@ -614,8 +651,7 @@ def copy_songlist_into_drive(songs, part_folders):
             new_files = 0
             updated_files = 0
             for song in songs:
-                if args.verbose:
-                    push_log_section("Copying files for [green]" + song['name'], live=outer_live)
+                push_log_section("Copying files for [green]" + song['name'], live=outer_live, save_to_file=args.verbose)
                 for part_key in song['parts']:
                     files = song['parts'][part_key]
                     # Some parts have more than one chart (trumpet 1/2), so copy all files
@@ -624,12 +660,10 @@ def copy_songlist_into_drive(songs, part_folders):
                         existing_dest_file = None
                         for dest_file in part_folders[part_key]['files']:
                             if dest_file['name'] == file['name']:
-                                if args.verbose:
-                                    print("Found an existing file for [green]" + file['name'], live=inner_live)
+                                print("Found an existing file for [green]" + file['name'], live=inner_live, save_to_file=args.verbose)
                                 existing_dest_file = dest_file
                         if not existing_dest_file:
-                            if args.verbose:
-                                print("No existing Drive file found in destination folder for [green]" + file['name'], live=inner_live)    
+                            print("No existing file found in destination folder for [green]" + file['name'], live=inner_live, save_to_file=args.verbose)
 
                         copied = sync_file(
                             source_file=file,
@@ -645,8 +679,7 @@ def copy_songlist_into_drive(songs, part_folders):
                         else:
                             updated_files += 1
 
-                if args.verbose:
-                    pop_log_section()
+                pop_log_section()
             print(f"Finished copying all songs!", live=outer_live)
             print(f"[cyan]{new_files}[/cyan] new files. [cyan]{updated_files}[/cyan] changed files. [cyan]{up_to_date}[/cyan] files up to date.", live=inner_live)
 
