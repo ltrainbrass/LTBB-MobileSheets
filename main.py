@@ -161,7 +161,7 @@ def main():
     if len(partless_files) > 0:
         warn('[yellow]Some files were not associated with any instrument (they might be Conductor Scores):', silent=True)
         for file in partless_files:
-            warn(    '[yellow]    ' + file['name'], silent=True)
+            warn(    '[yellow]    ' + file['src_name'], silent=True)
     print("[cyan]See part information at [green]cache/songs_with_parts.json")
     save_dict('cache/songs_with_parts.json', songs)
     time.sleep(1)
@@ -176,6 +176,7 @@ def main():
     for part in INSTRUMENTS:
         push_log_section("Finding part folder [magenta]" + part)
         folder = get_or_create_folder(part, DEST_MUSIC_FOLDER)
+        stamps_folder = get_or_create_folder('stamps', folder['id'])
         folder['files'] = list_pdfs_in_folder(folder['id'])
         part_folders[part] = folder
         print("Found " + str(len(folder['files'])) + " existing PDFs")
@@ -240,19 +241,36 @@ def get_song_preferred_names(songs):
     for key in SOLO_PARTS:
         possible_instruments.extend([word.lower().replace(' ', '_') for word in SOLO_PARTS[key]])
     for song in songs:
+        # This won't pick up songs with a hyphen but whatever
+        song_name_sanitized = song['name'].lower().replace(' ', '_').replace('.','')
         for file in song['files']:
             # Figure out if the file name starts with an instrument
-            file_name_split_sanitized = file['name'][:-4].lower().replace(' ', '_').replace('.','').split('-')
+            file_name_split = file['dest_name'][:-4].split('-')
+            file_name_split_sanitized = file['dest_name'][:-4].lower().replace(' ', '_').replace('.','').split('-')
             if len(file_name_split_sanitized) > 1:
-                for possible_key in possible_instruments:
-                    if possible_key in file_name_split_sanitized[0]:
-                        file_name_split = file['name'][:-4].split('-')
-                        file['preferred_name'] = "".join(file_name_split[1:]).strip() + ' - ' + file_name_split[0].strip()
-                        if args.verbose:
-                            print("    Turned [green]" + file['name'][:-4] + "[/green] into [green]" + file['preferred_name'] + "[/green] for alphabet reasons", print_to_std_out=False)
+                for split_idx, file_name_part in enumerate(file_name_split):
+                    if song_name_sanitized in file_name_split_sanitized[split_idx]:
+                        if split_idx == 0:
+                            file['preferred_name'] = file['dest_name'][:-4]
+                        else:
+                            file['preferred_name'] = file_name_part
+                            start_idx = file['dest_name'][:-4].index(file_name_part)
+                            end_idx = start_idx + len(file_name_part)
+                            file['preferred_name'] += file['dest_name'][:-4][end_idx:].lstrip() + ' - ' + file['dest_name'][:-4][:start_idx].rstrip().rstrip('-').rstrip()
+                            if args.verbose:
+                                print("    Turned [green]" + file['dest_name'] + "[/green] into '[green]" + file['preferred_name'] + "[/green]'")
                         break
+                if 'preferred_name' not in file:
+                    # Try a harder way, detecting which piece has the instrument. This is prone to error.
+                    # e.g. "Trombone 1-2 - All I Want is You" becomes "2 - All I Want is You - Trombone 1"
+                    for possible_key in possible_instruments:
+                        if possible_key in file_name_split_sanitized[0]:
+                            file['preferred_name'] = "".join(file_name_split[1:]).strip() + ' - ' + file_name_split[0].strip()
+                            if args.verbose:
+                                print("    Turned [green]" + file['dest_name'][:-4] + "[/green] into [green]" + file['preferred_name'] + "[/green] for alphabet reasons", print_to_std_out=False)
+                            break
             if 'preferred_name' not in file:
-                file['preferred_name'] = file['name'][:-4]
+                file['preferred_name'] = file['dest_name'][:-4]
 
 def warn(message, silent=False):
     message = '[yellow]WARNING: [/yellow]' + message
@@ -347,6 +365,9 @@ def list_folders_in_folder(folder_id):
         fields="files(id, name)",
     )
 
+def sanitize_file_name(name):
+    return name.replace('/', '+').replace('\\', '+')
+
 # Gets all PDF files in a Google Drive folder
 def list_pdfs_in_folder(folder_id):
     files = query_drive_files(
@@ -354,11 +375,12 @@ def list_pdfs_in_folder(folder_id):
         fields="files(id, name, size, createdTime, modifiedTime, parents)"
     )
 
-    files
-
     # Populate extra metadata we will need
     for file in files:
-        file['filehash'] = java_string_hashcode(file['name'])
+        file['src_name'] = file['name']
+        file['dest_name'] = sanitize_file_name(file['name'])
+        del file['name']
+        file['filehash'] = java_string_hashcode(file['dest_name'])
         dt = parser.isoparse(file['modifiedTime'])
         file['modifiedTime'] = int(dt.timestamp() * 1000)
         dt = parser.isoparse(file['createdTime'])
@@ -442,10 +464,10 @@ def find_partless_files(songs):
         seen_files = set()
         for part in song['parts']:
             for file in song['parts'][part]:
-                if file['name'] not in seen_files:
-                    seen_files.add(file['name'])
+                if file['src_name'] not in seen_files:
+                    seen_files.add(file['src_name'])
         for file in song['files']:
-            if file['name'] not in seen_files:
+            if file['src_name'] not in seen_files:
                 partless_files.append(file)
     return partless_files
 
@@ -457,13 +479,13 @@ def assemble_song_parts(song):
     files = song['files']
     song['parts'] = {}
     for file in files:
-        file_name = file['name']
+        file_name = file['src_name']
         parts = extract_parts_from_filename(file_name)
         for part in parts:
             if part not in song['parts']:
                 song['parts'][part] = []
             song['parts'][part].append(file)
-            print("[magenta]" + part + "[/magenta]: [green]" + file['name'])
+            print("[magenta]" + part + "[/magenta]: [green]" + file['src_name'])
     
     # If a part doesn't have a file, try a backup
     for part_key in INSTRUMENTS:
@@ -473,14 +495,14 @@ def assemble_song_parts(song):
                 # Directly take the part if it's in there
                 if backup_part in song['parts']:
                     song['parts'][part_key] = [file for file in song['parts'][backup_part]]
-                    print("[magenta]" + part_key + "[/magenta] copying backup instrument [green]" + str([file['name'] for file in song['parts'][backup_part]]))
+                    print("[magenta]" + part_key + "[/magenta] copying backup instrument [green]" + str([file['src_name'] for file in song['parts'][backup_part]]))
                     break
                 else:
                     # The backup part might be something werid like "Bb Treble Clef Instruments", so do another filename test
                     for file in files:
-                        if filename_contains(file['name'], backup_part):
+                        if filename_contains(file['src_name'], backup_part):
                             song['parts'][part_key] = [file]
-                            print("[magenta]" + part_key + "[/magenta] using backup part [green]" + file['name'])
+                            print("[magenta]" + part_key + "[/magenta] using backup part [green]" + file['src_name'])
                             found = True
                     if found:
                         break
@@ -489,10 +511,10 @@ def assemble_song_parts(song):
 
     # Solo parts
     for part_key in INSTRUMENTS: # Tenor Sax, etc
-        for file in files: # file['name'] = "Soloist (Bb) - Valerie.pdf", etc
+        for file in files: # file['src_name'] = "Soloist (Bb) - Valerie.pdf", etc
             for solo_part in SOLO_PARTS[part_key]: # Soloist (Bb), etc
-                if filename_contains(file['name'], solo_part):
-                    print("[magenta]" + part_key + "[/magenta] using soloist part [green]" + file['name'])
+                if filename_contains(file['src_name'], solo_part):
+                    print("[magenta]" + part_key + "[/magenta] using soloist part [green]" + file['src_name'])
                     if part_key not in song['parts']:
                         song['parts'][part_key] = []
                     song['parts'][part_key].append(file)
@@ -504,7 +526,7 @@ def assemble_song_parts(song):
                 found = True
                 break
         if not found:
-            print("[yellow]Instrument not found for file: " + file['name'])
+            print("[yellow]Instrument not found for file: " + file['src_name'])
 
 
 # Function for getting a sanitized instrument/part name out of "MySong123 - __Tenor__123_v4"
@@ -615,9 +637,10 @@ def escape_drive_query(name):
     return name.replace("'", "\\'")
 
 # Drive copy file if newer
-def sync_file(source_file, dest_folder, existing_file=None, new_name=None, live=None):
+def sync_file(source_file, dest_folder, existing_file=None, live=None):
     # Get source file metadata
-    source_name = new_name or source_file["name"]
+    source_name = source_file["src_name"]
+    dest_name = source_file["dest_name"]
     source_modified = source_file["modifiedTime"]
 
     if existing_file:
@@ -640,9 +663,9 @@ def sync_file(source_file, dest_folder, existing_file=None, new_name=None, live=
             return existing_file["id"]  # nothing to do
 
     # Copy the source file into the folder
-    new_file_metadata = {"parents": [dest_folder['id']], "name": source_name}
+    new_file_metadata = {"parents": [dest_folder['id']], "name": dest_name}
     copied_file = drive.files().copy(fileId=source_file['id'], body=new_file_metadata, fields="id, name", supportsAllDrives=True).execute()
-    print(f"Copied '[green]{source_name}[/green]' to folder '[magenta]{dest_folder['name']}[/magenta]'")
+    print(f"Copied '[green]{source_name}[/green]' to '[magenta]{dest_folder['name']}[/magenta]/[green]" + dest_name + "[/green]'")
     return copied_file["id"]
 
 def get_file_metadata(file_id):
@@ -656,10 +679,10 @@ def get_file_metadata(file_id):
 def dedupe_files(folder):
     seen = set()
     for file in folder['files']:
-        if file['name'] not in seen:
-            seen.add(file['name'])
+        if file['dest_name'] not in seen:
+            seen.add(file['dest_name'])
         else:
-            print(f"De-duping '[green]{file['name']}[/green]' with ID {file['id']} in folder '[magenta]{folder['name']}'[/magenta]")
+            print(f"De-duping '[green]{file['dest_name']}[/green]' with ID {file['id']} in folder '[magenta]{folder['dest_name']}'[/magenta]")
             drive.files().update(
                 fileId=file["id"],
                 body={"trashed": True},
@@ -682,17 +705,16 @@ def copy_songlist_into_drive(songs, part_folders):
                         needs_copy = True
                         existing_dest_file = None
                         for dest_file in part_folders[part_key]['files']:
-                            if dest_file['name'] == file['name']:
-                                print("Found an existing file for [green]" + file['name'], live=inner_live, save_to_file=args.verbose)
+                            if dest_file['src_name'] == file['dest_name']:
+                                print("Found an existing destination file [green]" + dest_file['src_name'] + "[/green] for source file [green]" + file['src_name'], live=inner_live, save_to_file=args.verbose)
                                 existing_dest_file = dest_file
                         if not existing_dest_file:
-                            print("No existing file found in destination folder for [green]" + file['name'], live=inner_live, save_to_file=args.verbose)
+                            print("No existing file found in destination folder for [green]" + file['src_name'], live=inner_live, save_to_file=args.verbose)
 
                         copied = sync_file(
                             source_file=file,
                             dest_folder=part_folders[part_key],
                             existing_file=existing_dest_file,
-                            new_name=file['name'],
                             live=inner_live,
                         )
                         if not existing_dest_file:
@@ -886,17 +908,18 @@ def update_database(songs, setlists, part_folders):
             os.makedirs("cache/pdf", exist_ok=True)
             
             for file in song['files']:
-                file_name_sanitized = file['name'].replace(' ', '_').replace('\\', '_').replace('/','_')
+                file_name_sanitized = file['src_name'].replace(' ', '_').replace('\\', '_').replace('/','_')
                 file_cache_path = "cache/pdf/" + file_name_sanitized
 
                 if needs_download("cache/pdf", file_name_sanitized, file["modifiedTime"]):
-                    print('Downloading and caching PDF to count pages for [green]' + file['name'], live=live)
+                    print('Downloading and caching PDF to count pages for [green]' + file['src_name'], live=live)
                     download_pdf_for_pagecount(file, "cache/pdf/" + file_name_sanitized)
                 else:
                     if args.verbose:
                         print('Using cached PDF for [green]' + file_name_sanitized, live=live)
                 file['pagecount'] = get_page_count(file_cache_path)
                 file['pageorder'] = '1-' + str(file['pagecount'])
+        print('Finished downloading songs!', live=live)
     pop_log_section()
 
     for part in used_instruments:
@@ -917,14 +940,15 @@ def update_database(songs, setlists, part_folders):
                     song_ids[song_idx] = {}
                     for file in song['parts'][part]:
                         song_id += 1
-                        song_ids[song_idx][file['name']] = song_id
-
-                        if args.verbose:
-                            print("Inserting Song [green]" + file['name'] + '[/green] into database [cyan]' + db_path, live=live)
+                        song_ids[song_idx][file['dest_name']] = song_id
                         
                         if 'preferred_name' not in file:
+                            if args.verbose:
+                                print("Inserting Song [green]" + file['dest_name'] + '[/green] into database [cyan]' + db_path, live=live)
                             print("File did not have preferred name:")
                             print(file)
+                        elif args.verbose:
+                            print("Inserting Song [green]" + file['dest_name'] + '[/green] (preferred name [green]' + file['preferred_name'] + '[/green] ID=[cyan]' + str(part_folders[part]['id']) + '[/cyan]) into database [cyan]' + db_path, live=live)
 
                         # The file names are ugly. We can change the name in the MobileSheets database without changing the file name.
                         cur.execute("""
@@ -935,7 +959,7 @@ def update_database(songs, setlists, part_folders):
                         cur.execute("""
                         INSERT INTO Files (SongId, Path, PageOrder, FileSize, LastModified, Source, Type, SourceFilePageCount, FileHash, Width, Height)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (song_id, part_folders[part]['id'] + '/' + file['name'], file['pageorder'], file['size'], file['modifiedTime'], 1, 1, file['pagecount'], file['filehash'], -1, -1))
+                        (song_id, part_folders[part]['id'] + '/' + file['dest_name'], file['pageorder'], file['size'], file['modifiedTime'], 1, 1, file['pagecount'], file['filehash'], -1, -1))
 
                         cur.execute("""
                         INSERT INTO AutoScroll (SongId, Behavior, PauseDuration, Speed, FixedDuration, ScrollPercent, ScrollOnLoad, TimeBeforeScroll)
@@ -972,7 +996,7 @@ def update_database(songs, setlists, part_folders):
 
                         # Add line to hashcodes
                         with open('output/'+part.replace(' ','_').lower() + '_hashcodes.txt', "a", encoding="utf-8") as f_out:
-                            f_out.write(f"{part_folders[part]['id']}/{file['name']}\n")
+                            f_out.write(f"{part_folders[part]['id']}/{file['dest_name']}\n")
                             f_out.write(f"{file['filehash']}\n")
                             f_out.write(f"{file['modifiedTime']}\n")
                             f_out.write(f"{file['size']}\n")
@@ -985,14 +1009,14 @@ def update_database(songs, setlists, part_folders):
                     setlist_song = songs[setlist_song_idx]
                     if part in setlist_song['parts']:
                         for setlist_file in setlist_song['parts'][part]:
-                            ref_song_id = song_ids[setlist_song_idx][setlist_file['name']]
+                            ref_song_id = song_ids[setlist_song_idx][setlist_file['dest_name']]
                             cur.execute("""
                             INSERT INTO SetlistSong (SetlistId, SongId)
                             VALUES (?, ?)""",
                             (setlist_id, ref_song_id))
                             found = True
                             if args.verbose:
-                                print("Inserting Setlist Song [green]" + setlist_file['name'] + "[/green] into setlist [cyan]" + setlist['name'], live=live)
+                                print("Inserting Setlist Song [green]" + setlist_file['dest_name'] + "[/green] into setlist [cyan]" + setlist['name'], live=live)
             
             conn.commit()
             conn.close()
