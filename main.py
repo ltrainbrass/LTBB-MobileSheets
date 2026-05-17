@@ -229,8 +229,8 @@ def main():
     if error_log:
         print()
         print("[cyan]The following warnings/errors occured:", rule=True)
-        for error in error_log:
-            print(error)
+        for e in error_log:
+            print(e)
     else:
         print("0 warnings or errors, great job!")
 
@@ -246,6 +246,8 @@ def get_song_preferred_names(songs):
         for file in song['files']:
             # Figure out if the file name starts with an instrument
             file_name_split = file['dest_name'][:-4].split('-')
+            for i in range(len(file_name_split)):
+                file_name_split[i] = file_name_split[i].strip()
             file_name_split_sanitized = file['dest_name'][:-4].lower().replace(' ', '_').replace('.','').split('-')
             if len(file_name_split_sanitized) > 1:
                 for split_idx, file_name_part in enumerate(file_name_split):
@@ -908,7 +910,7 @@ def update_database(songs, setlists, part_folders):
             os.makedirs("cache/pdf", exist_ok=True)
             
             for file in song['files']:
-                file_name_sanitized = file['src_name'].replace(' ', '_').replace('\\', '_').replace('/','_')
+                file_name_sanitized = file['src_name'].replace(' ', '_').replace('\\', '_').replace('/','_').replace('?','')
                 file_cache_path = "cache/pdf/" + file_name_sanitized
 
                 if needs_download("cache/pdf", file_name_sanitized, file["modifiedTime"]):
