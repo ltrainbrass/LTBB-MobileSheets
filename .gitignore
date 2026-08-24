@@ -9,3 +9,4 @@ cache/
 output/
 log.html
 log.txt
+__pycache__

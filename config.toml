@@ -1,10 +1,10 @@
 [drive_settings]
-Weekly_Agenda_ID = "1jcazpKFV5wNjzDY-3oC9BKei_3iVQhrQ6xy3P76G-5w"
 Source_Music_Folder = "12y2cjGE7GE3MTJ8QtNs3_Z5L30o5Ql6D" # The LTBB folder containing all the sheet music. Currently organized in folders like 'A-C', 'D-F', etc
 Destination_Music_Folder = "1h-T2mnFrr0VpafBDJ3nv3vvO_xLGir9t" # The folder where the MobileSheets database and PDFs will end up
+Instrument_Parts_Folder = "MobileSheets Databases" # Name of the subfolder (inside Destination_Music_Folder) that holds the per-instrument part folders
 Seasonal_Songs = "1M7sLr9wwvHJIfKGijRTSjC5ae1CODzbY" # Some subfolders that contain additional songs not in the alphabetic folders
-Drive_ID = "0AIscw8ywGnshUk9PVA" # Quirk of using a Shared Drive, we sometimes need this value
 Ignore_Folders = ['2. Seasonal Songs', '3. Warm-ups', '4. 3rd Rail Drumline', '5. Resources', '6. Recordings']
+Ignore_Docs = ['1DylyWhzPOjKYJr6TAbeGhHUVXb1hi9GUkua3URtzr4c', '1lYz54_jarIxfqZu0vVebfcRIBykGsikdSs3QNhlecU0']
 
 [instrumentation.instruments]
 # Names by which these instruments might appear in the titles of the PDF files - includes some interesting typos

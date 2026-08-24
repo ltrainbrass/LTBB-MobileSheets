@@ -2,7 +2,7 @@
 
 This is a project for preparing a MobileSheets database for LTBB.
 1. Assembles the PDFs into a folder structure that MobileSheets understands
-2. Scrapes the Weekly Rehearsal Agenda to put together a setlist in a form that MobileSheets understands
+2. Scrapes setlist Docs from the source and destination Drive folders to put together setlists in a form that MobileSheets understands
 3. Uploads those databases and PDFs into a separate Google Drive folder for each instrument.
 
 ## Installation

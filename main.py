@@ -28,14 +28,14 @@ from rich.tree import Tree
 from rich.live import Live
 from rich.text import Text
 from dateutil import parser
-from PyPDF2 import PdfReader
+from PyPDF2 import PdfReader, PdfWriter
 from threading import Lock
 
 # Command line arguments
 arg_parser = argparse.ArgumentParser()
 arg_parser.add_argument('--clean', action="store_true", help="Force a clean redownload of songs, clear local cache. This does NOT clean the Google Drive folder, do that manually if needed (it shouldn't be needed).") 
 arg_parser.add_argument('--skipquery', action="store_true", help="Used for inner dev loop. Stores the file metadata of the drive so we don't have to requery each song. But usually you want to requery.")
-arg_parser.add_argument('--skipupload', action="store_true", help="Used for inner dev loop. Skips uploading the databases files at the end.")
+arg_parser.add_argument('--skipupload', action="store_true", help="Used for inner dev loop. Skips all Google Drive writes: copying PDFs into the part folders, uploading the databases, and uploading the collated PDFs.")
 arg_parser.add_argument('--verbose', action="store_true", help="Spit out extra info") 
 arg_parser.add_argument('--dedupe', action="store_true", help="For use when a part folder accidentally ends up with multiple copies of the same file. Shouldn't happen.") 
 args = arg_parser.parse_args()
@@ -45,12 +45,12 @@ with open("config.toml", "rb") as f:
     config = tomli.load(f)
 
 # Relevant Google Drive folders - TODO read this from a .ini file instead
-WEEKLY_AGENDA_ID = config["drive_settings"]["Weekly_Agenda_ID"]
 SRC_MUSIC_FOLDER = config["drive_settings"]["Source_Music_Folder"] # The LTBB folder containing all the sheet music. Currently organized in folders like "A-C", "D-F", etc
 DEST_MUSIC_FOLDER = config["drive_settings"]["Destination_Music_Folder"] # The folder where the MobileSheets database and PDFs will end up
+INSTRUMENT_PARTS_FOLDER = config["drive_settings"]["Instrument_Parts_Folder"] # Subfolder (inside DEST_MUSIC_FOLDER) that holds the per-instrument part folders
 SEASONAL_SONGS = config["drive_settings"]["Seasonal_Songs"] # Some subfolders that contain additional songs not in the alphabetic folders
-DRIVE_ID = config["drive_settings"]["Drive_ID"] # Quirk of using a Shared Drive, we sometimes need this
 IGNORE_FOLDERS = config["drive_settings"]["Ignore_Folders"]
+IGNORE_DOCS = config["drive_settings"]["Ignore_Docs"]
 EXCEPTION_PARTS = config["exceptions"]
 MAX_SONGS = 99999
 
@@ -136,8 +136,16 @@ def main():
         # Query the LTBB main Drive for one gazillion PDFs
         songs = query_tree([SRC_MUSIC_FOLDER, SEASONAL_SONGS])
         remove_duplicate_dicts(songs)
-        # Read the rehearsal schedule, modify songs if needed
-        setlists = query_setlist_docs({"Rehearsal": WEEKLY_AGENDA_ID}, songs)
+        # Every Google Doc in either root folder is a setlist, keyed by its title
+        setlist_docs = {}
+        for folder_id in [SRC_MUSIC_FOLDER, DEST_MUSIC_FOLDER]:
+            for doc in list_docs_in_folder(folder_id):
+                if doc['id'] in IGNORE_DOCS:
+                    continue
+                # Hard-coded tidy-up of specific doc titles used as setlist/folder names
+                setlist_name = doc['name'].replace("LTBB Weekly Rehearsal Agenda", "LTBB Weekly Rehearsal")
+                setlist_docs[setlist_name] = doc['id']
+        setlists = query_setlist_docs(setlist_docs, songs)
         # Cache the result of the queries for inner dev loop
         os.makedirs('cache', exist_ok=True)
         os.makedirs('output', exist_ok=True)
@@ -172,10 +180,12 @@ def main():
     # Find destination part Drive folder IDs and existing files
     print()
     push_log_section("[cyan]Querying destination part folders...", rule=True)
+    # Part folders live inside a container subfolder (e.g. 'Songs-By-Instrument') of the destination folder
+    parts_container = get_or_create_folder(INSTRUMENT_PARTS_FOLDER, DEST_MUSIC_FOLDER)
     part_folders = {}
     for part in INSTRUMENTS:
         push_log_section("Finding part folder [magenta]" + part)
-        folder = get_or_create_folder(part, DEST_MUSIC_FOLDER)
+        folder = get_or_create_folder(part, parts_container['id'])
         stamps_folder = get_or_create_folder('stamps', folder['id'])
         folder['files'] = list_pdfs_in_folder(folder['id'])
         part_folders[part] = folder
@@ -194,7 +204,10 @@ def main():
     # Skips if the Src song is not newer than the Dest song
     print()
     push_log_section('[cyan]Copying songs from source folders into destination part folders...', rule=True)
-    copy_songlist_into_drive(songs, part_folders)
+    if not args.skipupload:
+        copy_songlist_into_drive(songs, part_folders)
+    else:
+        print('[cyan]--skipupload set, skipping copying PDFs into Drive')
     pop_log_section(rule=True)
     print('[cyan]Songs copied into Drive!')
     time.sleep(1)
@@ -206,6 +219,16 @@ def main():
         update_database(songs, setlists, part_folders)
     pop_log_section(rule=True)
     print("[cyan]Database updated!")
+    time.sleep(1)
+
+    # Collate each setlist document's charts into combined per-instrument PDFs (one folder per document)
+    print()
+    push_log_section("[cyan]Collating per-instrument PDFs for each setlist document...", rule=True)
+    collated = collate_instrument_pdfs(songs, setlists)
+    if not args.skipupload:
+        upload_collated_pdfs(collated)
+    pop_log_section(rule=True)
+    print("[cyan]Collated PDFs written to the output folder!")
     time.sleep(1)
 
     # Detect instruments that are missing parts for a song in the setlist
@@ -367,8 +390,23 @@ def list_folders_in_folder(folder_id):
         fields="files(id, name)",
     )
 
+# Gets all Google Docs in a Google Drive folder
+def list_docs_in_folder(folder_id):
+    return query_drive_files(
+        query=f"'{folder_id}' in parents and mimeType = 'application/vnd.google-apps.document' and trashed = false",
+        fields="files(id, name)",
+    )
+
 def sanitize_file_name(name):
     return name.replace('/', '+').replace('\\', '+')
+
+# Make a string safe to use as a local file/folder name across platforms
+def sanitize_local_name(name):
+    return re.sub(r'[\\/:*?"<>|]', '_', name).strip() or 'untitled'
+
+# Lowercase slug: spaces and other non-alphanumeric runs become single underscores
+def slugify(name):
+    return re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') or 'untitled'
 
 # Gets all PDF files in a Google Drive folder
 def list_pdfs_in_folder(folder_id):
@@ -569,9 +607,11 @@ def scrape_song_list(doc_id):
         if "paragraph" not in element:
             continue
         for run in element["paragraph"]["elements"]:
-            text = run.get("textRun", {})
-            if "textStyle" in text and "link" in text["textStyle"]:
-                links.append(text["textStyle"]["link"]["url"])
+            link = run.get("textRun", {}).get("textStyle", {}).get("link", {}).get("url")
+            if not link:
+                link = run.get("richLink", {}).get("richLinkProperties", {}).get("uri")
+            if link:
+                links.append(link)
 
     links = [link for link in links if bool(re.match(r"^https://drive\.google\.com/drive/.*folders/.*", link))]
 
@@ -617,7 +657,8 @@ def create_folder(name, parent_id=None):
 
 # Drive Create folder if does not exist
 def get_or_create_folder(name, parent_id=None):
-    query = f"name = '{name}' and mimeType = 'application/vnd.google-apps.folder'"
+    safe_name = escape_drive_query(name)
+    query = f"name = '{safe_name}' and mimeType = 'application/vnd.google-apps.folder'"
     if parent_id:
         query += f" and '{parent_id}' in parents and trashed = false"
 
@@ -810,6 +851,114 @@ def get_page_count(path):
     reader = PdfReader(path)
     return len(reader.pages)
 
+# Collate each setlist document's charts into combined per-instrument PDFs.
+# For every setlist (one per source doc) and every instrument used in that setlist, this writes
+# 'output/collated/<doc title>/<instrument>_collated.pdf' in the setlist's running order.
+# Returns a dict of {setlist name: [local collated pdf paths]}.
+# Uses the locally cached PDFs (from the page-counting step); only downloads a PDF if it is missing.
+# Never uploads or modifies anything in Drive (see upload_collated_pdfs for that).
+def collate_instrument_pdfs(songs, setlists):
+    os.makedirs('cache/pdf', exist_ok=True)
+    os.makedirs('output', exist_ok=True)
+
+    # Start each run with a clean collated tree (clear_output_folder only removes top-level files)
+    collated_root = os.path.join('output', 'collated')
+    if os.path.exists(collated_root):
+        shutil.rmtree(collated_root)
+    os.makedirs(collated_root, exist_ok=True)
+
+    collated = {}  # setlist (doc) name -> list of local collated pdf paths
+
+    for setlist in setlists:
+        setlist_name = setlist['name']
+        push_log_section(f"[cyan]Collating PDFs for setlist [magenta]{setlist_name}")
+        collated[setlist_name] = []
+
+        # Songs referenced by this setlist, in running order, de-duped
+        ordered_indices = []
+        seen_indices = set()
+        for idx in setlist['song_index']:
+            if idx not in seen_indices:
+                seen_indices.add(idx)
+                ordered_indices.append(idx)
+        setlist_songs = [songs[i] for i in ordered_indices]
+
+        # Local output folder for this document
+        local_dir = os.path.join(collated_root, sanitize_local_name(setlist_name))
+        os.makedirs(local_dir, exist_ok=True)
+
+        # Figure out which instruments actually have parts among this setlist's songs
+        used_instruments = set()
+        for song in setlist_songs:
+            for part in song['parts']:
+                used_instruments.add(part)
+
+        for instrument in sorted(used_instruments):
+            push_log_section(f"[cyan]Collating [magenta]{instrument}")
+
+            # Gather every file for this instrument in setlist order, de-duped by destination name.
+            # Sort each song's charts by name so multi-part charts read in order (Trumpet 1, 2, 3);
+            # the Drive listing returns a song folder's PDFs in an arbitrary order.
+            files = []
+            seen = set()
+            for song in setlist_songs:
+                if instrument not in song['parts']:
+                    continue
+                for file in sorted(song['parts'][instrument], key=lambda f: f['dest_name']):
+                    if file['dest_name'] in seen:
+                        continue
+                    seen.add(file['dest_name'])
+                    files.append(file)
+
+            if not files:
+                print("No files found, skipping")
+                pop_log_section()
+                continue
+
+            writer = PdfWriter()
+            added = 0
+            with Live(log_indent + "Collating...", console=console, refresh_per_second=4) as live:
+                for file in files:
+                    file_name_sanitized = file['src_name'].replace(' ', '_').replace('\\', '_').replace('/', '_').replace('?', '')
+                    file_cache_path = "cache/pdf/" + file_name_sanitized
+
+                    # PDFs are normally already cached from the page-counting step; download only if missing
+                    if needs_download("cache/pdf", file_name_sanitized, file["modifiedTime"]):
+                        print('Downloading missing PDF for [green]' + file['src_name'], live=live)
+                        download_pdf_for_pagecount(file, file_cache_path)
+
+                    try:
+                        writer.append(file_cache_path)
+                        added += 1
+                        if args.verbose:
+                            print("Added [green]" + file.get('preferred_name', file['dest_name']), live=live)
+                    except Exception as e:
+                        error("Could not add [green]" + file['dest_name'] + "[/green] to the [magenta]" + instrument + "[/magenta] collation: " + str(e), silent=True)
+
+                out_path = os.path.join(local_dir, slugify(instrument) + '_' + slugify(setlist_name) + '.pdf')
+                with open(out_path, 'wb') as f_out:
+                    writer.write(f_out)
+                writer.close()
+                collated[setlist_name].append(out_path)
+                print(f"Wrote [cyan]{added}[/cyan] PDFs to [green]{out_path}", live=live)
+            pop_log_section()
+        pop_log_section()
+    return collated
+
+# Uploads the collated per-instrument PDFs into a Drive folder per document (named by the doc title),
+# created directly under the destination music folder. Modifies Drive, so main() gates this on --skipupload.
+def upload_collated_pdfs(collated):
+    for setlist_name, pdf_paths in collated.items():
+        if not pdf_paths:
+            continue
+        push_log_section(f"[cyan]Uploading collated PDFs for [magenta]{setlist_name}")
+        folder = get_or_create_folder(setlist_name, DEST_MUSIC_FOLDER)
+        with Live(log_indent + "Uploading...", console=console, refresh_per_second=4) as live:
+            for path in pdf_paths:
+                upload_to_drive(local_path=path, dest_name=os.path.basename(path), parent_folder_id=folder['id'], live=live)
+            print("Uploaded!", live=live)
+        pop_log_section()
+
 # File download
 def download_pdf_for_pagecount(file, dest_path):
     # Download the file to get the page count
@@ -940,7 +1089,8 @@ def update_database(songs, setlists, part_folders):
                 song = songs[song_idx]
                 if part in song['parts']:
                     song_ids[song_idx] = {}
-                    for file in song['parts'][part]:
+                    # Sort a song's charts by name so multi-part charts are added in order (e.g. Trumpet 1, 2, 3)
+                    for file in sorted(song['parts'][part], key=lambda f: f['dest_name']):
                         song_id += 1
                         song_ids[song_idx][file['dest_name']] = song_id
                         
@@ -1010,7 +1160,7 @@ def update_database(songs, setlists, part_folders):
                 for setlist_song_idx in setlist['song_index']:
                     setlist_song = songs[setlist_song_idx]
                     if part in setlist_song['parts']:
-                        for setlist_file in setlist_song['parts'][part]:
+                        for setlist_file in sorted(setlist_song['parts'][part], key=lambda f: f['dest_name']):
                             ref_song_id = song_ids[setlist_song_idx][setlist_file['dest_name']]
                             cur.execute("""
                             INSERT INTO SetlistSong (SetlistId, SongId)
@@ -1037,13 +1187,14 @@ def update_database(songs, setlists, part_folders):
             print("Uploaded!", live=live)
         pop_log_section()
 
-try:
-    main()
-finally:
-    # Save log
-    log_indent = ''
-    print("Output saved to log.html and log.txt")
-    file_console.save_html("log.html")
-    file_console.save_text("log.txt")
-    log_path = os.path.abspath("log.html")
-    webbrowser.open(f"file://{log_path}")
+if __name__ == "__main__":
+    try:
+        main()
+    finally:
+        # Save log
+        log_indent = ''
+        print("Output saved to log.html and log.txt")
+        file_console.save_html("log.html")
+        file_console.save_text("log.txt")
+        log_path = os.path.abspath("log.html")
+        webbrowser.open(f"file://{log_path}")
