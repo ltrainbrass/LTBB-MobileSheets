@@ -58,10 +58,13 @@ MAX_SONGS = 99999
 INSTRUMENTS = config["instrumentation"]["instruments"]
 BACKUP_INSTRUMENTS = config["instrumentation"]["backup_instruments"]
 SOLO_PARTS = config["instrumentation"]["solo_parts"]
+EXCLUDED_PART_NAMES = config["instrumentation"].get("excluded_part_names", {})
 INSTRUMENT_LOOKUP = {}
 for main in INSTRUMENTS:
     for sub in INSTRUMENTS[main]:
-        INSTRUMENT_LOOKUP[sub.lower()] = main
+        if sub.lower() not in INSTRUMENT_LOOKUP:
+            INSTRUMENT_LOOKUP[sub.lower()] = []
+        INSTRUMENT_LOOKUP[sub.lower()].append(main)
 
 # Globals for Drive access
 def get_creds():
@@ -150,6 +153,7 @@ def main():
         os.makedirs('cache', exist_ok=True)
         os.makedirs('output', exist_ok=True)
         save_dict('cache/cache.json', {'songs':songs, 'setlists':setlists})
+    remove_setlist_self_references(songs, setlists)
     pop_log_section(rule=True)
     print("[cyan]Done querying!")
     time.sleep(1)
@@ -576,23 +580,34 @@ def extract_parts_from_filename(file_name):
     instruments = []
     file_name_sanitized = file_name.lower().replace(' ', '_').replace('.','')
     for possible_instrument in INSTRUMENT_LOOKUP:
-        if filename_contains(file_name, possible_instrument) and INSTRUMENT_LOOKUP[possible_instrument] not in instruments:
-            instruments.append(INSTRUMENT_LOOKUP[possible_instrument])
+        if filename_contains(file_name, possible_instrument):
+            for instrument in INSTRUMENT_LOOKUP[possible_instrument]:
+                if any(filename_contains(file_name, excluded_name) for excluded_name in EXCLUDED_PART_NAMES.get(instrument, [])):
+                    continue
+                if instrument not in instruments:
+                    instruments.append(instrument)
     for part_key in INSTRUMENTS:
         if part_key in EXCEPTION_PARTS and file_name in EXCEPTION_PARTS[part_key]:
             instruments.append(part_key)
     return instruments
 
-# Gets a Google Drive folder name from its ID
-def get_folder_name(folder_id):
+# Gets Google Drive folder metadata from its ID
+def get_folder(folder_id):
     return drive.files().get(
         fileId=folder_id,
-        fields="id, name",
+        fields="id, name, parents",
         supportsAllDrives=True
-    ).execute()['name']
+    ).execute()
 
 def extract_folder_id(url):
+    if not re.match(r"^https://drive\.google\.com/", url):
+        return None
+
     match = re.search(r"/folders/([a-zA-Z0-9_-]+)", url)
+    if match:
+        return match.group(1)
+
+    match = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
     return match.group(1) if match else None
 
 # Scrapes a doc (like the Weekly Agenda) and extracts all songs linked
@@ -613,13 +628,17 @@ def scrape_song_list(doc_id):
             if link:
                 links.append(link)
 
-    links = [link for link in links if bool(re.match(r"^https://drive\.google\.com/drive/.*folders/.*", link))]
+    folder_ids = [folder_id for link in links if (folder_id := extract_folder_id(link))]
 
     songs = []
     # Get files at Drive links
-    for link in links:
-        folder_id = extract_folder_id(link)
-        folder_name = get_folder_name(folder_id)
+    for folder_id in folder_ids:
+        folder = get_folder(folder_id)
+        folder_name = folder['name']
+        if DEST_MUSIC_FOLDER in folder.get('parents', []):
+            print('Found generated destination folder in doc: [green]' + folder_name + '[/green] (skipping)')
+            continue
+
         folder = {'id': folder_id, 'name': folder_name, 'files': list_pdfs_in_folder(folder_id)}
         
         if len(folder['files']) > 0:
@@ -851,6 +870,12 @@ def get_page_count(path):
     reader = PdfReader(path)
     return len(reader.pages)
 
+def clear_collated_output(collated_root):
+    os.makedirs(collated_root, exist_ok=True)
+    for root, _, files in os.walk(collated_root):
+        for file_name in files:
+            os.remove(os.path.join(root, file_name))
+
 # Collate each setlist document's charts into combined per-instrument PDFs.
 # For every setlist (one per source doc) and every instrument used in that setlist, this writes
 # 'output/collated/<doc title>/<instrument>_collated.pdf' in the setlist's running order.
@@ -861,11 +886,9 @@ def collate_instrument_pdfs(songs, setlists):
     os.makedirs('cache/pdf', exist_ok=True)
     os.makedirs('output', exist_ok=True)
 
-    # Start each run with a clean collated tree (clear_output_folder only removes top-level files)
+    # Preserve directories because Windows may keep them locked while they are open in Explorer.
     collated_root = os.path.join('output', 'collated')
-    if os.path.exists(collated_root):
-        shutil.rmtree(collated_root)
-    os.makedirs(collated_root, exist_ok=True)
+    clear_collated_output(collated_root)
 
     collated = {}  # setlist (doc) name -> list of local collated pdf paths
 
@@ -981,6 +1004,39 @@ def remove_duplicate_dicts(data):
             seen.add(data[i]["name"])
     for i in reversed(to_remove):
         del data[i]
+
+def remove_setlist_self_references(songs, setlists):
+    generated_indices = {
+        song_idx
+        for setlist in setlists
+        for song_idx in setlist['song_index']
+        if songs[song_idx]['name'] == setlist['name']
+    }
+    if not generated_indices:
+        return
+
+    for song_idx in sorted(generated_indices):
+        warn(
+            "Ignoring generated collation folder [green]"
+            + songs[song_idx]['name']
+            + "[/green] because it was linked from its own setlist document."
+        )
+
+    old_to_new = {}
+    filtered_songs = []
+    for old_idx, song in enumerate(songs):
+        if old_idx in generated_indices:
+            continue
+        old_to_new[old_idx] = len(filtered_songs)
+        filtered_songs.append(song)
+
+    songs[:] = filtered_songs
+    for setlist in setlists:
+        setlist['song_index'] = [
+            old_to_new[song_idx]
+            for song_idx in setlist['song_index']
+            if song_idx in old_to_new
+        ]
 
 def insert_setlist_songs_into_songlist(setlist_songs, songs):
     setlist_index = []
